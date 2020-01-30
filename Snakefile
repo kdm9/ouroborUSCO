@@ -161,13 +161,15 @@ rule getreads:
         bai="data/{iter}/{ref}/bam/{aligner}/{sample}.bam.bai",
     output:
         "data/{iter}/{ref}/readsout/{aligner}/{sample}.fastq.gz"
+    log:
+        "data/{iter}/{ref}/log/readsout/{aligner}/{sample}.fastq.gz"
     params:
         regions=getbuscoregions,
     shell:
-        "cat"
-        "   <(samtools view -u -f 4 {input.bam} | samtools collate -O -u | samtools fastq)" 
-        "   <(samtools view -u {params.regions} | samtools collate -O -u | samtools fastq)" 
-        "| gzip > {output}"
+        "(cat"
+        "   <(samtools view -u -f 4 {input.bam} | samtools collate -O -u - | samtools fastq -)" 
+        "   <(samtools view -u {input.bam} {params.regions} | samtools collate -O -u - | samtools fastq -)" 
+        "| gzip > {output}) 2>{log}"
 
 rule getbuscoseqs:
     input:
@@ -180,6 +182,127 @@ rule getbuscoseqs:
         "samtools faidx {input.ref} {params.regions} >{output}"
 
 
+# rule mpileup:
+#     input:
+#         bam="data/{iter}/{ref}/bam/{aligner}/{sample}.bam",
+#         bai="data/{iter}/{ref}/bam/{aligner}/{sample}.bam.bai",
+#         ref=getref,
+#         fai=lambda wc: getref(wc) + ".fai"
+#     output:
+#         bcf="data/{iter}/{ref}/variants/raw_split/mpileup~{aligner}~{ref}~{sample}/{region}.bcf",
+#     log:
+#         "data/{iter}/{ref}/log/variants/raw_split/mpileup~{aligner}~{ref}~{sample}/{region}.log",
+#     params:
+#         theta=config["varcall"].get("theta_prior", 0.01),
+#         minmq=lambda wc: config["varcall"]["minmapq"].get(wc.aligner, 5),
+#         minbq=config["varcall"]["minbq"],
+#     priority: 1  # get them done earlier, normalisation is super quick
+#     shell:
+#         "( bcftools mpileup"
+#         "   --adjust-MQ 50"
+#         "   --redo-BAQ"
+#         "   --max-depth 20000" # the default per file max (250x) is insane, i.e. <1x for most sets. new limit of 20000x  equates to a max. of 20x across all samples.
+#         "   --min-MQ {params.minmq}"
+#         "   --min-BQ {params.minbq}"
+#         "   --fasta-ref {input.ref}"
+#         "   --annotate FORMAT/DP,FORMAT/AD,FORMAT/SP,INFO/AD" #output extra tags
+#         "   --region '{wildcards.region}'"
+#         "   --output-type u" # uncompressed bam
+#         "   {input.bam}"
+#         " | bcftools call"
+#         "   --targets '{wildcards.region}'" # might not be needed
+#         "   --multiallelic-caller"
+#         "   --prior {params.theta}"
+#         "   -O b" # compressed bam
+#         "   -o {output.bcf}"
+#         " ) >{log} 2>&1"
+# 
+# 
+# rule bcfnorm:
+#     input:
+#         bcf="data/{iter}/{ref}/variants/raw_split/mpileup~{aligner}~{ref}~{sample}/{region}.bcf",
+#         ref=getref,
+#         fai=lambda wc: getref(wc) + ".fai"
+#     output:
+#         bcf=temp("data/{iter}/{ref}/variants/norm/mpileup~{aligner}~{ref}~{sample}/{region}.bcf"),
+#     log:
+#         "data/{iter}/{ref}/log/variants/norm/mpileup~{aligner}~{ref}~{sample}/{region}.log",
+#     shell:
+#         "( bcftools norm"
+#         "   --fasta-ref {input.ref}"
+#         "   -O u"
+#         "   {input.bcf}" # SKIP VT FOR NOW " | vt decompose_blocksub + -o -" # decompose MNP to multipe SNPs
+#         " | bcftools norm" # Split multi-alleics
+#         "   --fasta-ref {input.ref}"
+#         "   --do-not-normalize"
+#         "   --multiallelics -snps"
+#         "   -O u  -o {output.bcf}"
+#         " ) >{log} 2>&1"
+# 
+# rule bcffilter:
+#     input:
+#         bcf="data/{iter}/{ref}/variants/norm/{caller}~{aligner}~{ref}~{sample}/{region}.bcf",
+#         ref=getref,
+#         fai=lambda wc: getref(wc) + ".fai"
+#     output:
+#         bcf=temp("data/{iter}/{ref}/variants/filtered/{caller}~{aligner}~{ref}~{sample}_filtered~{filter}/{region}.bcf"),
+#     log:
+#         "data/{iter}/{ref}/log/variants/filtered/{caller}~{aligner}~{ref}~{sample}_filtered~{filter}/{region}.log",
+#     params:
+#         filtarg=lambda wc: config["varcall"]["filters"][wc.filter].replace('\n', ' ')
+#     shell:
+#         "( bcftools view"
+#         "   {params.filtarg}"
+#         "   -O u"
+#         "   {input.bcf}"
+#         " | bcftools norm" # We normalise here to re-join multi-allelic sites, after filtering with multi-allelics split
+#         "   --fasta-ref {input.ref}"
+#         "   --do-not-normalize"
+#         "   --multiallelics +snps" # Split multi-alleic sites
+#         "   -O b  -o {output.bcf}"
+#         " ) >{log} 2>&1"
+# 
+# 
+# def getbuscobcfs(wc):
+#     if wc.iter == "1":
+#         buscofile = checkpoints.busco_firstrun.get(ref=wc.ref).output[0]
+#     else:
+#         last = str((int(wc.iter) - 1))
+#         buscofile = checkpoints.busco_persamp.get(ref=wc.ref, sample=wc.sample, iter=last).output[0]
+#     regions = busco2regions(buscofile)
+#     return expand("data/{iter}/{ref}/variants/filtered/{caller}~{aligner}~{ref}~{sample}_filtered~{filter}/{region}.bcf",
+#                   iter=wc.iter, caller=wc.caller, aligner=wc.aligner, ref=wc.ref, sample=wc.sample, filter=wc.filter, region=regions)
+# 
+# localrules: bcfmerge_fofn
+# rule bcfmerge_fofn:
+#     input:
+#         bcf=getbuscobcfs,
+#     output:
+#         fofn=temp("data/{iter}/{ref}/variants/filtered/{caller}~{aligner}~{ref}~{sample}_filtered~{filter}.INPUT_FOFN"),
+#     run:
+#         with open(output[0], "w") as fh:
+#             for s in sorted(input):
+#                 print(s, file=fh)
+# 
+# rule bcfmerge:
+#     input:
+#         bcf=getbuscobcfs,
+#         fofn="data/{iter}/{ref}/variants/filtered/{caller}~{aligner}~{ref}~{sample}_filtered~{filter}.INPUT_FOFN",
+#     output:
+#         bcf="data/{iter}/{ref}/variants/final/{caller}~{aligner}~{ref}~{sample}_filtered~{filter}.bcf",
+#     log:
+#         "data/{iter}/{ref}/log/variants/final/{caller}~{aligner}~{ref}~{sample}_filtered~{filter}.log",
+#     threads: 4
+#     shell:
+#         "( bcftools concat"
+#         "   --threads {threads}"
+#         "   -O b"
+#         "   -o {output.bcf}"
+#         "   --file-list {input.fofn}"
+#         " ) >{log} 2>&1"
+
+
+
 rule mpileup:
     input:
         bam="data/{iter}/{ref}/bam/{aligner}/{sample}.bam",
@@ -187,9 +310,9 @@ rule mpileup:
         ref=getref,
         fai=lambda wc: getref(wc) + ".fai"
     output:
-        bcf="data/{iter}/{ref}/variants/raw_split/mpileup~{aligner}~{ref}~{sample}/{region}.bcf",
+        bcf="data/{iter}/{ref}/variants/raw_split/mpileup~{aligner}~{ref}~{sample}.bcf",
     log:
-        "data/{iter}/{ref}/log/variants/raw_split/mpileup~{aligner}~{ref}~{sample}/{region}.log",
+        "data/{iter}/{ref}/log/variants/raw_split/mpileup~{aligner}~{ref}~{sample}.log",
     params:
         theta=config["varcall"].get("theta_prior", 0.01),
         minmq=lambda wc: config["varcall"]["minmapq"].get(wc.aligner, 5),
@@ -204,11 +327,9 @@ rule mpileup:
         "   --min-BQ {params.minbq}"
         "   --fasta-ref {input.ref}"
         "   --annotate FORMAT/DP,FORMAT/AD,FORMAT/SP,INFO/AD" #output extra tags
-        "   --region '{wildcards.region}'"
         "   --output-type u" # uncompressed bam
         "   {input.bam}"
         " | bcftools call"
-        "   --targets '{wildcards.region}'" # might not be needed
         "   --multiallelic-caller"
         "   --prior {params.theta}"
         "   -O b" # compressed bam
@@ -218,13 +339,13 @@ rule mpileup:
 
 rule bcfnorm:
     input:
-        bcf="data/{iter}/{ref}/variants/raw_split/mpileup~{aligner}~{ref}~{sample}/{region}.bcf",
+        bcf="data/{iter}/{ref}/variants/raw_split/mpileup~{aligner}~{ref}~{sample}.bcf",
         ref=getref,
         fai=lambda wc: getref(wc) + ".fai"
     output:
-        bcf=temp("data/{iter}/{ref}/variants/norm/mpileup~{aligner}~{ref}~{sample}/{region}.bcf"),
+        bcf=temp("data/{iter}/{ref}/variants/norm/mpileup~{aligner}~{ref}~{sample}.bcf"),
     log:
-        "data/{iter}/{ref}/log/variants/norm/mpileup~{aligner}~{ref}~{sample}/{region}.log",
+        "data/{iter}/{ref}/log/variants/norm/mpileup~{aligner}~{ref}~{sample}.log",
     shell:
         "( bcftools norm"
         "   --fasta-ref {input.ref}"
@@ -239,13 +360,13 @@ rule bcfnorm:
 
 rule bcffilter:
     input:
-        bcf="data/{iter}/{ref}/variants/norm/{caller}~{aligner}~{ref}~{sample}/{region}.bcf",
+        bcf="data/{iter}/{ref}/variants/norm/{caller}~{aligner}~{ref}~{sample}.bcf",
         ref=getref,
         fai=lambda wc: getref(wc) + ".fai"
     output:
-        bcf=temp("data/{iter}/{ref}/variants/filtered/{caller}~{aligner}~{ref}~{sample}_filtered~{filter}/{region}.bcf"),
+        bcf="data/{iter}/{ref}/variants/final/{caller}~{aligner}~{ref}~{sample}_filtered~{filter}.bcf",
     log:
-        "data/{iter}/{ref}/log/variants/filtered/{caller}~{aligner}~{ref}~{sample}_filtered~{filter}/{region}.log",
+        "data/{iter}/{ref}/log/variants/filtered/{caller}~{aligner}~{ref}~{sample}_filtered~{filter}.log",
     params:
         filtarg=lambda wc: config["varcall"]["filters"][wc.filter].replace('\n', ' ')
     shell:
@@ -261,42 +382,7 @@ rule bcffilter:
         " ) >{log} 2>&1"
 
 
-def getbuscobcfs(wc):
-    if wc.iter == "1":
-        buscofile = checkpoints.busco_firstrun.get(ref=wc.ref).output[0]
-    else:
-        last = str((int(wc.iter) - 1))
-        buscofile = checkpoints.busco_persamp.get(ref=wc.ref, sample=wc.sample, iter=last).output[0]
-    regions = busco2regions(buscofile)
-    return expand("data/{iter}/{ref}/variants/filtered/{caller}~{aligner}~{ref}~{sample}_filtered~{filter}/{region}.bcf",
-                  iter=wc.iter, caller=wc.caller, aligner=wc.aligner, ref=wc.ref, sample=wc.sample, filter=wc.filter, region=regions)
 
-localrules: bcfmerge_fofn
-rule bcfmerge_fofn:
-    input:
-        bcf=getbuscobcfs,
-    output:
-        fofn=temp("data/{iter}/{ref}/variants/filtered/{caller}~{aligner}~{ref}~{sample}_filtered~{filter}.INPUT_FOFN"),
-    run:
-        with open(output[0], "w") as fh:
-            for s in sorted(input):
-                print(s, file=fh)
-
-rule bcfmerge:
-    input:
-        fofn="data/{iter}/{ref}/variants/filtered/{caller}~{aligner}~{ref}~{sample}_filtered~{filter}.INPUT_FOFN",
-    output:
-        bcf="data/{iter}/{ref}/variants/final/{caller}~{aligner}~{ref}~{sample}_filtered~{filter}.bcf",
-    log:
-        "data/{iter}/{ref}/log/variants/final/{caller}~{aligner}~{ref}~{sample}_filtered~{filter}.log",
-    threads: 4
-    shell:
-        "( bcftools concat"
-        "   --threads {threads}"
-        "   -O b"
-        "   -o {output.bcf}"
-        "   --file-list {input.fofn}"
-        " ) >{log} 2>&1"
 
 rule refupdate:
     input:
