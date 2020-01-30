@@ -1,0 +1,13 @@
+name: ouroboros
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.*
+  - snakemake
+  - nextgenmap
+  - samtools
+  - bcftools
+  - busco
+  - bwa
+

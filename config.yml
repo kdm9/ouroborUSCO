@@ -1,0 +1,45 @@
+iterations: 5
+
+busco:
+  lineage: /g/data/xe2/references/busco/eudicots_odb10
+
+origrefs:
+  #grandis: /g/data/xe2/references/eucalyptus/grandis/Egrandis_v2.fasta
+  #grandisv2chl: /g/data/xe2/references/eucalyptus/grandis_v2_chloro/Egrandis-v2-plus-chloro.fasta
+  emel-scott-v1: /g/data/xe2/references/eucalyptus/emel_scott/Emelliodora_CSIROg1_SISH00000000.1.fasta
+
+mapping:
+  aligners:
+    - bwa
+  refs:
+    - grandisv2chl
+    - emel-scott
+  samplesets:
+    - all_samples
+  ngm:
+    sensitivity: 0.5
+
+varcall:
+  minmapq:
+    bwa: 20
+    ngm: 4
+  minbq: 15
+  theta_prior: 0.1 # approx 10% of sites vary, it seems. Crazy!
+  filters:
+    default: >
+      -i 'QUAL >= 10 &&
+          ALT != "." &&
+          INFO/DP >= 5 &&
+          INFO/AN >= 3'
+    strict: >
+      -i 'QUAL >= 40 &&
+          ALT != "." &&
+          INFO/DP >= 20 &&
+          ((INFO/AN / N_SAMPLES)*2) > 0.20 &&
+          MAF >= 0.01'
+    # Above is presence rate, >20%
+
+samples:
+  #- CCA0704
+  #- CCA0681
+  - EmelCSIRO_mini
