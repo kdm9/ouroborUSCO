@@ -2,7 +2,7 @@
 Iterative extraction of busco loci from short read datasets for phylo purposes
 
 
-esentially just:
+essentially just:
 
 ```
 for iter in 1..N do
